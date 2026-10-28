@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="quest_calendar"
+        android:label="할 건 해야지"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

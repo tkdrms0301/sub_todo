@@ -1,6 +1,6 @@
-# quest_calendar
+# 할 건 해야지
 
-A new Flutter project.
+서브컬처 게임의 일일·주간 퀘스트와 일정을 기록하는 Flutter 앱입니다.
 
 ## Getting Started
 
