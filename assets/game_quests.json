@@ -1,0 +1,55 @@
+{
+  "games": [
+    {
+      "name": "원신",
+      "alias": "원신",
+      "types": ["daily", "schedule"],
+      "quests": [
+        { "period": "daily", "title": "일일 퀘스트" }
+      ]
+    },
+    {
+      "name": "명조: 워더링 웨이브",
+      "alias": "명조",
+      "types": ["daily", "weekly", "schedule"],
+      "quests": [
+        { "period": "daily", "title": "일일 퀘스트" },
+        { "period": "weekly", "title": "주간 퀘스트" }
+      ]
+    },
+    {
+      "name": "블루 아카이브",
+      "alias": "블아",
+      "types": ["daily", "schedule"],
+      "quests": [
+        { "period": "daily", "title": "일일 퀘스트" }
+      ]
+    },
+    {
+      "name": "승리의 여신: 니케",
+      "alias": "니케",
+      "types": ["daily", "schedule"],
+      "quests": [
+        { "period": "daily", "title": "일일 퀘스트" }
+      ]
+    },
+    {
+      "name": "젠레스 존 제로",
+      "alias": "젠존제",
+      "types": ["daily", "weekly", "schedule"],
+      "quests": [
+        { "period": "daily", "title": "일일 퀘스트" },
+        { "period": "weekly", "title": "주간 퀘스트" }
+      ]
+    },
+    {
+      "name": "붕괴: 스타레일",
+      "alias": "붕스",
+      "types": ["daily", "weekly", "schedule"],
+      "quests": [
+        { "period": "daily", "title": "일일 퀘스트" },
+        { "period": "weekly", "title": "주간 퀘스트" }
+      ]
+    }
+  ]
+}
