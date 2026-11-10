@@ -3,6 +3,7 @@
     {
       "name": "원신",
       "alias": "원신",
+      "iconAsset": "assets/game_icons/genshin.png",
       "types": ["daily", "schedule"],
       "quests": [
         { "period": "daily", "title": "일일 퀘스트" }
@@ -11,6 +12,7 @@
     {
       "name": "명조: 워더링 웨이브",
       "alias": "명조",
+      "iconAsset": "assets/game_icons/wuthering_waves.png",
       "types": ["daily", "weekly", "schedule"],
       "quests": [
         { "period": "daily", "title": "일일 퀘스트" },
@@ -20,6 +22,7 @@
     {
       "name": "블루 아카이브",
       "alias": "블아",
+      "iconAsset": "assets/game_icons/blue_archive.png",
       "types": ["daily", "schedule"],
       "quests": [
         { "period": "daily", "title": "일일 퀘스트" }
@@ -28,6 +31,7 @@
     {
       "name": "승리의 여신: 니케",
       "alias": "니케",
+      "iconAsset": "assets/game_icons/nikke.png",
       "types": ["daily", "schedule"],
       "quests": [
         { "period": "daily", "title": "일일 퀘스트" }
@@ -36,6 +40,7 @@
     {
       "name": "젠레스 존 제로",
       "alias": "젠존제",
+      "iconAsset": "assets/game_icons/zenless_zone_zero.png",
       "types": ["daily", "weekly", "schedule"],
       "quests": [
         { "period": "daily", "title": "일일 퀘스트" },
@@ -45,6 +50,7 @@
     {
       "name": "붕괴: 스타레일",
       "alias": "붕스",
+      "iconAsset": "assets/game_icons/honkai_star_rail.png",
       "types": ["daily", "weekly", "schedule"],
       "quests": [
         { "period": "daily", "title": "일일 퀘스트" },

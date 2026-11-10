@@ -1,12 +1,18 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/app_data_backup.dart';
 import '../models/calendar_event.dart';
 import '../models/game.dart';
 import '../models/quest.dart';
+import '../utils/game_icon.dart';
 import '../widgets/month_calendar.dart';
+import '../widgets/game_avatar.dart';
 import '../widgets/scheduled_events.dart';
 import '../widgets/selected_day_quests.dart';
 import 'event_entry_screen.dart';
@@ -22,9 +28,25 @@ class CalendarScreen extends StatefulWidget {
 
 enum _CalendarMode { full, month, week }
 
-class _CalendarScreenState extends State<CalendarScreen> {
+enum _GameManagementActionType { edit, remove, add }
+
+class _GameManagementAction {
+  const _GameManagementAction(this.type, {this.game});
+
+  final _GameManagementActionType type;
+  final GameInfo? game;
+}
+
+class _CalendarScreenState extends State<CalendarScreen>
+    with WidgetsBindingObserver {
+  static const _localDataKey = 'sub_todo_app_data_v1';
+
   final List<GameInfo> _games = [];
+  final SharedPreferencesAsync _preferences = SharedPreferencesAsync();
   List<CalendarEvent> _events = [];
+  Future<void> _saveQueue = Future<void>.value();
+  bool _isLoadingData = true;
+  String? _dataLoadWarning;
   String? _scheduleLoadError;
   String? _gamePresetLoadError;
   late DateTime _selectedDate = _dateOnly(DateTime.now());
@@ -105,8 +127,187 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void initState() {
     super.initState();
-    _loadScheduleFile();
-    _loadGamePresets();
+    WidgetsBinding.instance.addObserver(this);
+    _initializeData();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_isLoadingData &&
+        (state == AppLifecycleState.paused ||
+            state == AppLifecycleState.detached)) {
+      // Each edit is saved immediately; persist once more when leaving the app
+      // to cover cases where Android backgrounds the process during a write.
+      _saveAppData();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  Future<void> _initializeData() async {
+    var shouldSaveDefaults = false;
+    var shouldSaveMigratedIcons = false;
+    try {
+      final saved = await _preferences.getString(_localDataKey);
+      if (saved == null) {
+        await _loadDefaultData();
+        shouldSaveDefaults = true;
+      } else {
+        try {
+          final backup = AppDataBackup.decode(saved);
+          shouldSaveMigratedIcons = await _fillMissingDefaultGameIcons(
+            backup.games,
+          );
+          if (!mounted) return;
+          setState(() {
+            _games
+              ..clear()
+              ..addAll(backup.games);
+            _events = backup.events;
+          });
+        } catch (error) {
+          _dataLoadWarning =
+              '저장 데이터를 불러오지 못해 기본 데이터로 시작합니다. 백업 파일에서 복원해 주세요. ($error)';
+          await _loadDefaultData();
+        }
+      }
+    } catch (error) {
+      _dataLoadWarning = '기기 저장소를 읽지 못했습니다. ($error)';
+      await _loadDefaultData();
+    } finally {
+      if (mounted) setState(() => _isLoadingData = false);
+    }
+    if (!mounted) return;
+    if ((shouldSaveDefaults || shouldSaveMigratedIcons) &&
+        _dataLoadWarning == null) {
+      await _saveAppData();
+    }
+  }
+
+  Future<bool> _fillMissingDefaultGameIcons(Iterable<GameInfo> games) async {
+    var changed = false;
+    for (final game in games) {
+      if (game.iconBase64 != null && game.iconBase64!.isNotEmpty) continue;
+      final catalogEntry = gameCatalog
+          .where((entry) => entry.name.toLowerCase() == game.name.toLowerCase())
+          .firstOrNull;
+      final iconAsset = catalogEntry?.iconAsset;
+      if (iconAsset == null) continue;
+      try {
+        game.iconBase64 = await loadGameIconAsset(iconAsset);
+        changed = true;
+      } catch (_) {
+        // Keep the game's generic icon if a bundled icon cannot be read.
+      }
+    }
+    return changed;
+  }
+
+  Future<void> _loadDefaultData() async {
+    await Future.wait([_loadScheduleFile(), _loadGamePresets()]);
+  }
+
+  Future<void> _saveAppData() {
+    final contents = AppDataBackup(games: _games, events: _events).encode();
+    _saveQueue = _saveQueue.catchError((Object _) {}).then((_) async {
+      try {
+        await _preferences.setString(_localDataKey, contents);
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('기기 저장에 실패했습니다: $error')));
+        }
+      }
+    });
+    return _saveQueue;
+  }
+
+  Future<void> _exportBackup() async {
+    try {
+      await _saveAppData();
+      final now = DateTime.now();
+      final date =
+          '${now.year.toString().padLeft(4, '0')}'
+          '${now.month.toString().padLeft(2, '0')}'
+          '${now.day.toString().padLeft(2, '0')}';
+      final result = await FilePicker.saveFile(
+        dialogTitle: '백업 파일 저장',
+        fileName: 'sub_todo_backup_$date.json',
+        bytes: Uint8List.fromList(
+          utf8.encode(AppDataBackup(games: _games, events: _events).encode()),
+        ),
+      );
+      if (!mounted || result == null) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('백업 파일을 저장했습니다.')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('백업 파일 저장에 실패했습니다: $error')));
+    }
+  }
+
+  Future<void> _importBackup({bool confirmReplace = true}) async {
+    try {
+      final file = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (file == null) return;
+      final backup = AppDataBackup.decode(
+        utf8.decode(await file.readAsBytes()),
+      );
+      await _fillMissingDefaultGameIcons(backup.games);
+      if (!mounted) return;
+      final questCount = backup.games.fold<int>(
+        0,
+        (count, game) => count + game.quests.length,
+      );
+      if (confirmReplace) {
+        final shouldRestore = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('백업 복원'),
+            content: Text(
+              '게임 ${backup.games.length}개, 퀘스트 $questCount개, '
+              '일정 ${backup.events.length}개를 복원합니다. '
+              '현재 앱 데이터는 백업 내용으로 바뀝니다.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('취소'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('복원'),
+              ),
+            ],
+          ),
+        );
+        if (!mounted || shouldRestore != true) return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _games
+          ..clear()
+          ..addAll(backup.games);
+        _events = backup.events;
+        _dataLoadWarning = null;
+      });
+      await _saveAppData();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('백업을 복원했습니다.')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('백업 파일을 읽지 못했습니다: $error')));
+    }
   }
 
   Future<void> _loadGamePresets() async {
@@ -130,6 +331,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
         if (name is! String || name.trim().isEmpty) {
           throw const FormatException('게임 이름이 비어 있습니다.');
         }
+        final iconAsset = value['iconAsset'];
+        final iconBase64 = iconAsset is String
+            ? await loadGameIconAsset(iconAsset)
+            : null;
         final rawTypes = value['types'];
         if (rawTypes is! List) {
           throw FormatException('$name 게임에 types 배열이 필요합니다.');
@@ -147,6 +352,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         final game = GameInfo(
           name: name.trim(),
           alias: value['alias'] is String ? value['alias'] as String : null,
+          iconBase64: iconBase64,
           color: Colors.primaries[presets.length % Colors.primaries.length],
           enabledTypes: types,
         );
@@ -237,6 +443,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
     if (!mounted || event == null) return;
     setState(() => _events.add(event));
+    await _saveAppData();
   }
 
   Future<void> _openGameSearch() async {
@@ -246,6 +453,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         builder: (_) => GameSearchScreen(
           games: _games,
           events: _events,
+          onDataChanged: _saveAppData,
           onEditQuest: _editQuest,
           onDeleteQuest: _deleteQuest,
           onEditEvent: _editEvent,
@@ -275,12 +483,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
     if (!mounted || updated == null || index >= _events.length) return;
     setState(() => _events[index] = updated);
+    await _saveAppData();
   }
 
   Future<void> _deleteEvent(CalendarEvent event) async {
     final confirmed = await _confirmDelete('일정', event.title);
     if (!confirmed || !mounted) return;
     setState(() => _events.remove(event));
+    await _saveAppData();
   }
 
   Future<void> _editQuest(GameInfo game, GameQuest quest) async {
@@ -312,6 +522,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         destination.quests.add(quest);
       }
     });
+    await _saveAppData();
   }
 
   Future<void> _deleteQuest(
@@ -329,11 +540,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
           game.quests.remove(quest);
         }
       });
+      await _saveAppData();
       return;
     }
     final confirmed = await _confirmDelete('퀘스트', quest.title);
     if (!confirmed || !mounted) return;
     setState(() => game.quests.remove(quest));
+    await _saveAppData();
   }
 
   Future<bool?> _confirmDailyQuestDelete(GameQuest quest, DateTime date) =>
@@ -401,35 +614,28 @@ class _CalendarScreenState extends State<CalendarScreen> {
       false;
 
   Future<void> _addGame() async {
-    final existingNames = _games.map((game) => game.name).toSet();
-    final available = gameCatalog
-        .where((entry) => !existingNames.contains(entry.name))
-        .toList();
     final selected = await showDialog<GameCatalogEntry>(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('게임 선택'),
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('게임 추가'),
         children: [
-          ...available.map(
-            (entry) => SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, entry),
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: Text(entry.name),
-                subtitle: Text(
-                  entry.availablePeriods
-                      .map((period) => period.label)
-                      .join(' · '),
-                ),
-              ),
-            ),
+          ...gameCatalog.map(
+            (entry) => _gameCatalogOption(dialogContext, entry),
           ),
           SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, _customGameEntry),
-            child: const ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text('직접 입력'),
-              leading: Icon(Icons.edit_outlined),
+            onPressed: () => Navigator.pop(dialogContext, _customGameEntry),
+            child: Row(
+              children: [
+                _customGameIcon(),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [Text('그 외 게임 직접 추가'), Text('게임 이름과 아이콘 설정')],
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -437,66 +643,296 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
     if (!mounted || selected == null) return;
 
-    final initialTypes = <GameContentType>{GameContentType.schedule};
     if (identical(selected, _customGameEntry)) {
-      initialTypes.addAll(GameContentType.values);
-    } else {
-      if (selected.availablePeriods.contains(QuestPeriod.daily)) {
-        initialTypes.add(GameContentType.daily);
-      }
-      if (selected.availablePeriods.contains(QuestPeriod.weekly)) {
-        initialTypes.add(GameContentType.weekly);
-      }
+      await _addCustomGame();
+      return;
+    }
+    final duplicate = _games.any(
+      (game) => game.name.toLowerCase() == selected.name.toLowerCase(),
+    );
+    if (duplicate) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('이미 등록된 게임입니다. 게임 관리에서 수정할 수 있어요.')),
+      );
+      return;
     }
 
+    final enabledTypes = <GameContentType>{GameContentType.schedule};
+    if (selected.availablePeriods.contains(QuestPeriod.daily)) {
+      enabledTypes.add(GameContentType.daily);
+    }
+    if (selected.availablePeriods.contains(QuestPeriod.weekly)) {
+      enabledTypes.add(GameContentType.weekly);
+    }
+    final iconBase64 = selected.iconAsset == null
+        ? null
+        : await loadGameIconAsset(selected.iconAsset!);
+    if (!mounted) return;
+
+    setState(
+      () => _games.add(
+        GameInfo(
+          name: selected.name,
+          alias: selected.alias,
+          iconBase64: iconBase64,
+          color: Colors.primaries[_games.length % Colors.primaries.length],
+          enabledTypes: enabledTypes,
+        ),
+      ),
+    );
+    await _saveAppData();
+  }
+
+  Future<void> _addCustomGame() async {
     final draft = await showDialog<GameSetupDraft>(
       context: context,
       builder: (_) => GameSettingsDialog(
-        initialName: identical(selected, _customGameEntry) ? '' : selected.name,
-        initialAlias: selected.alias,
-        initialTypes: initialTypes,
+        initialName: '',
+        initialTypes: {...GameContentType.values},
+        allowCustomIcon: true,
       ),
     );
     if (!mounted || draft == null) return;
-    if (_games.any((game) => game.name == draft.name)) {
+    if (_games.any(
+      (game) => game.name.toLowerCase() == draft.name.toLowerCase(),
+    )) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('이미 등록된 게임입니다.')));
       return;
     }
-
+    final catalogEntry = gameCatalog
+        .where((entry) => entry.name.toLowerCase() == draft.name.toLowerCase())
+        .firstOrNull;
+    final iconBase64 =
+        draft.iconBase64 ??
+        (catalogEntry?.iconAsset == null
+            ? null
+            : await loadGameIconAsset(catalogEntry!.iconAsset!));
+    if (!mounted) return;
     setState(
       () => _games.add(
         GameInfo(
           name: draft.name,
           alias: draft.alias,
+          iconBase64: iconBase64,
           color: Colors.primaries[_games.length % Colors.primaries.length],
           enabledTypes: draft.enabledTypes,
         ),
       ),
     );
+    await _saveAppData();
+  }
+
+  Widget _gameCatalogOption(
+    BuildContext dialogContext,
+    GameCatalogEntry entry,
+  ) {
+    final isSelected = _games.any(
+      (game) => game.name.toLowerCase() == entry.name.toLowerCase(),
+    );
+    return SimpleDialogOption(
+      onPressed: () => Navigator.pop(dialogContext, entry),
+      child: Row(
+        children: [
+          _catalogGameIcon(entry, isSelected),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(entry.name),
+                Text(
+                  entry.availablePeriods
+                      .map((period) => period.label)
+                      .join(' · '),
+                  style: Theme.of(dialogContext).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _catalogGameIcon(GameCatalogEntry entry, bool selected) => SizedBox(
+    width: 48,
+    height: 48,
+    child: Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Positioned.fill(
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: selected ? Colors.green.shade600 : Colors.grey.shade400,
+                width: selected ? 2.5 : 1,
+              ),
+            ),
+            padding: const EdgeInsets.all(2),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(9),
+              child: entry.iconAsset == null
+                  ? const Icon(Icons.videogame_asset_outlined)
+                  : Image.asset(
+                      entry.iconAsset!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) =>
+                          const Icon(Icons.videogame_asset_outlined),
+                    ),
+            ),
+          ),
+        ),
+        Positioned(
+          right: -2,
+          bottom: -2,
+          child: Container(
+            width: 19,
+            height: 19,
+            decoration: BoxDecoration(
+              color: selected ? Colors.green.shade600 : Colors.white,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected ? Colors.green.shade600 : Colors.grey.shade400,
+              ),
+            ),
+            child: Icon(
+              selected ? Icons.check : Icons.add,
+              size: 14,
+              color: selected ? Colors.white : Colors.grey.shade700,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _customGameIcon() => Container(
+    width: 48,
+    height: 48,
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: Colors.grey.shade400),
+    ),
+    child: const Icon(Icons.edit_outlined),
+  );
+
+  Future<void> _removeGameSelection(GameInfo game) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('게임 선택 해제'),
+        content: Text(
+          '${game.name}의 퀘스트 ${game.quests.length}개를 삭제할까요? '
+          '이 게임에 연결된 일정은 유지됩니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('선택 해제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _games.remove(game));
+    await _saveAppData();
   }
 
   Future<void> _configureGame() async {
-    if (_games.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('먼저 게임을 등록해 주세요.')));
-      return;
-    }
-    final selectedGame = await showDialog<GameInfo>(
+    final action = await showDialog<_GameManagementAction>(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: const Text('설정할 게임 선택'),
-        children: _games
-            .map(
-              (game) => SimpleDialogOption(
-                onPressed: () => Navigator.pop(context, game),
-                child: Text(game.name),
-              ),
-            )
-            .toList(),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('게임 선택 및 관리'),
+        content: SizedBox(
+          width: 380,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 440),
+            child: _games.isEmpty
+                ? const Center(child: Text('등록된 게임이 없습니다.'))
+                : ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: _games.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final game = _games[index];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: GameAvatar(game: game, radius: 20),
+                        title: Text(game.name),
+                        subtitle: Text(game.alias),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: '수정',
+                              onPressed: () => Navigator.pop(
+                                dialogContext,
+                                _GameManagementAction(
+                                  _GameManagementActionType.edit,
+                                  game: game,
+                                ),
+                              ),
+                              icon: const Icon(Icons.edit_outlined),
+                            ),
+                            IconButton(
+                              tooltip: '삭제',
+                              onPressed: () => Navigator.pop(
+                                dialogContext,
+                                _GameManagementAction(
+                                  _GameManagementActionType.remove,
+                                  game: game,
+                                ),
+                              ),
+                              icon: const Icon(Icons.delete_outline),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.pop(
+              dialogContext,
+              const _GameManagementAction(_GameManagementActionType.add),
+            ),
+            icon: const Icon(Icons.add),
+            label: const Text('게임 추가'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('닫기'),
+          ),
+        ],
       ),
     );
-    if (!mounted || selectedGame == null) return;
+    if (!mounted || action == null) return;
+    switch (action.type) {
+      case _GameManagementActionType.add:
+        await _addGame();
+        break;
+      case _GameManagementActionType.edit:
+        final game = action.game;
+        if (game != null) await _editGame(game);
+        break;
+      case _GameManagementActionType.remove:
+        final game = action.game;
+        if (game != null) await _removeGameSelection(game);
+        break;
+    }
+  }
+
+  Future<void> _editGame(GameInfo selectedGame) async {
     final draft = await showDialog<GameSetupDraft>(
       context: context,
       builder: (_) => GameSettingsDialog(
@@ -527,6 +963,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         if (event.gameName == previousName) event.gameName = draft.name;
       }
     });
+    await _saveAppData();
   }
 
   Future<void> _addQuest() async {
@@ -562,6 +999,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         ),
       ),
     );
+    await _saveAppData();
   }
 
   void _changeMonth(int delta) {
@@ -655,6 +1093,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           games: _games,
                           onChanged: (quest, done) {
                             setState(() => quest.setDoneOn(date, done));
+                            _saveAppData();
                             setDialogState(() {});
                           },
                           onEdit: (game, quest) async {
@@ -700,8 +1139,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  String get _monthLabel =>
-      _month.year.toString() + '년 ' + _month.month.toString() + '월';
+  String get _monthLabel => _month.month.toString() + '월';
   String get _dateLabel {
     const weekdays = ['월', '화', '수', '목', '금', '토', '일'];
     return _selectedDate.month.toString() +
@@ -743,6 +1181,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
             style: TextStyle(color: Theme.of(context).colorScheme.error),
           ),
         ),
+      if (_dataLoadWarning != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Text(
+            _dataLoadWarning!,
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          ),
+        ),
       if (_gamePresetLoadError != null)
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
@@ -761,8 +1207,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
       SelectedDayQuests(
         date: _selectedDate,
         games: _games,
-        onChanged: (quest, done) =>
-            setState(() => quest.setDoneOn(_selectedDate, done)),
+        onChanged: (quest, done) {
+          setState(() => quest.setDoneOn(_selectedDate, done));
+          _saveAppData();
+        },
         onEdit: _editQuest,
         onDelete: (game, quest, date) => _deleteQuest(game, quest, date),
       ),
@@ -878,15 +1326,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Widget _menuDrawer() => Drawer(
     child: SafeArea(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: ListView(
+        padding: EdgeInsets.zero,
         children: [
           DrawerHeader(
             decoration: const BoxDecoration(color: Color(0xFF485CCB)),
             child: Align(
               alignment: Alignment.bottomLeft,
               child: Text(
-                '게임 퀘스트 캘린더',
+                '할 건 해야지',
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
                   color: Colors.white,
                   fontWeight: FontWeight.w800,
@@ -896,13 +1344,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
           ListTile(
             leading: const Icon(Icons.videogame_asset_outlined),
-            title: const Text('게임 추가'),
-            onTap: () => _runDrawerAction(_addGame),
-          ),
-          ListTile(
-            leading: const Icon(Icons.settings_outlined),
-            title: const Text('게임 설정'),
+            title: const Text('게임 관리'),
             onTap: () => _runDrawerAction(_configureGame),
+          ),
+          ExpansionTile(
+            leading: const Icon(Icons.backup_outlined),
+            title: const Text('백업'),
+            children: [
+              ListTile(
+                contentPadding: const EdgeInsets.only(left: 72, right: 16),
+                title: const Text('불러오기'),
+                onTap: () => _runDrawerAction(_importBackup),
+              ),
+              ListTile(
+                contentPadding: const EdgeInsets.only(left: 72, right: 16),
+                title: const Text('내보내기'),
+                onTap: () => _runDrawerAction(_exportBackup),
+              ),
+            ],
           ),
         ],
       ),
@@ -910,7 +1369,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   );
 
   Widget _topBar() => AppBar(
-    centerTitle: true,
+    centerTitle: false,
+    titleSpacing: 0,
     leading: Builder(
       builder: (context) => IconButton(
         tooltip: '메뉴 열기',
@@ -944,50 +1404,53 @@ class _CalendarScreenState extends State<CalendarScreen> {
   );
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    resizeToAvoidBottomInset: false,
-    drawer: _menuDrawer(),
-    body: SafeArea(
-      child: Column(
-        children: [
-          SizedBox(height: kToolbarHeight, child: _topBar()),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) => AnimatedSwitcher(
-                duration: const Duration(milliseconds: 650),
-                switchInCurve: Curves.easeInOutCubic,
-                switchOutCurve: Curves.easeInOutCubic,
-                transitionBuilder: (child, animation) {
-                  final slide = Tween<Offset>(
-                    begin: const Offset(0, 0.02),
-                    end: Offset.zero,
-                  ).animate(animation);
-                  return FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(position: slide, child: child),
-                  );
-                },
-                child: KeyedSubtree(
-                  key: ValueKey(_calendarMode),
-                  child: switch (_calendarMode) {
-                    _CalendarMode.full => _expandedLayout(),
-                    _CalendarMode.month => _collapsedLayout(),
-                    _CalendarMode.week => _weekLayout(),
-                  },
+  Widget build(BuildContext context) => _isLoadingData
+      ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+      : Scaffold(
+          resizeToAvoidBottomInset: false,
+          drawer: _menuDrawer(),
+          body: SafeArea(
+            child: Column(
+              children: [
+                SizedBox(height: kToolbarHeight, child: _topBar()),
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 650),
+                      switchInCurve: Curves.easeInOutCubic,
+                      switchOutCurve: Curves.easeInOutCubic,
+                      transitionBuilder: (child, animation) {
+                        final slide = Tween<Offset>(
+                          begin: const Offset(0, 0.02),
+                          end: Offset.zero,
+                        ).animate(animation);
+                        return FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(position: slide, child: child),
+                        );
+                      },
+                      child: KeyedSubtree(
+                        key: ValueKey(_calendarMode),
+                        child: switch (_calendarMode) {
+                          _CalendarMode.full => _expandedLayout(),
+                          _CalendarMode.month => _collapsedLayout(),
+                          _CalendarMode.week => _weekLayout(),
+                        },
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
-        ],
-      ),
-    ),
-  );
+        );
 }
 
 const _customGameEntry = GameCatalogEntry(
   name: '',
   availablePeriods: [QuestPeriod.daily, QuestPeriod.weekly],
 );
+
 DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
 
 class _NoStretchScrollBehavior extends ScrollBehavior {

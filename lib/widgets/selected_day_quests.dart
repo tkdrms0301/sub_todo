@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/game.dart';
 import '../models/quest.dart';
+import 'game_avatar.dart';
 
 bool _isQuestTypeEnabled(GameInfo game, GameQuest quest) =>
     game.enabledTypes.contains(
@@ -98,13 +99,6 @@ class SelectedDayQuests extends StatelessWidget {
                   padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
                   child: Row(
                     children: [
-                      CircleAvatar(
-                        radius: 5,
-                        backgroundColor: allDone
-                            ? Colors.grey.shade400
-                            : game.color,
-                      ),
-                      const SizedBox(width: 9),
                       Expanded(
                         child: Text(
                           game.name,
@@ -127,20 +121,19 @@ class SelectedDayQuests extends StatelessWidget {
                     ],
                   ),
                 ),
-                ...quests.map(
-                  (quest) => CheckboxListTile(
-                    value: quest.isDoneOn(date),
-                    activeColor: quest.isDoneOn(date)
-                        ? Colors.grey.shade400
-                        : game.color,
+                ...quests.map((quest) {
+                  final isDone = quest.isDoneOn(date);
+                  return ListTile(
                     dense: true,
-                    controlAffinity: ListTileControlAffinity.leading,
+                    leading: _GameCompletionButton(
+                      game: game,
+                      isDone: isDone,
+                      onTap: () => onChanged(quest, !isDone),
+                    ),
                     title: Text(
                       quest.title,
                       style: TextStyle(
-                        color: quest.isDoneOn(date)
-                            ? Colors.grey.shade500
-                            : null,
+                        color: isDone ? Colors.grey.shade500 : null,
                       ),
                     ),
                     subtitle: Text(
@@ -150,12 +143,10 @@ class SelectedDayQuests extends StatelessWidget {
                               ? ' · ' + _rangeLabel(quest)
                               : ''),
                       style: TextStyle(
-                        color: quest.isDoneOn(date)
-                            ? Colors.grey.shade500
-                            : null,
+                        color: isDone ? Colors.grey.shade500 : null,
                       ),
                     ),
-                    secondary: Row(
+                    trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         IconButton(
@@ -166,9 +157,7 @@ class SelectedDayQuests extends StatelessWidget {
                             height: 36,
                           ),
                           padding: EdgeInsets.zero,
-                          color: quest.isDoneOn(date)
-                              ? Colors.grey.shade400
-                              : null,
+                          color: isDone ? Colors.grey.shade400 : null,
                           onPressed: () => onEdit(game, quest),
                           icon: const Icon(Icons.edit_outlined, size: 20),
                         ),
@@ -180,17 +169,14 @@ class SelectedDayQuests extends StatelessWidget {
                             height: 36,
                           ),
                           padding: EdgeInsets.zero,
-                          color: quest.isDoneOn(date)
-                              ? Colors.grey.shade400
-                              : null,
+                          color: isDone ? Colors.grey.shade400 : null,
                           onPressed: () => onDelete(game, quest, date),
                           icon: const Icon(Icons.delete_outline, size: 20),
                         ),
                       ],
                     ),
-                    onChanged: (value) => onChanged(quest, value ?? false),
-                  ),
-                ),
+                  );
+                }),
               ],
             ),
           ),
@@ -199,4 +185,55 @@ class SelectedDayQuests extends StatelessWidget {
     }
     return Column(children: sections);
   }
+}
+
+class _GameCompletionButton extends StatelessWidget {
+  const _GameCompletionButton({
+    required this.game,
+    required this.isDone,
+    required this.onTap,
+  });
+
+  final GameInfo game;
+  final bool isDone;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    label: isDone ? '${game.name} 완료 취소' : '${game.name} 완료 표시',
+    child: InkWell(
+      customBorder: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+      ),
+      onTap: onTap,
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Opacity(
+              opacity: isDone ? 0.38 : 1,
+              child: GameAvatar(game: game, radius: 19),
+            ),
+            if (isDone)
+              Container(
+                width: 25,
+                height: 25,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.9),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.check_rounded,
+                  size: 21,
+                  color: Colors.green.shade700,
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

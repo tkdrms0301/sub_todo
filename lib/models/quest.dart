@@ -10,8 +10,12 @@ class GameQuest {
     required this.period,
     DateTime? startDate,
     DateTime? endDate,
+    Iterable<String> completedDates = const [],
+    Iterable<String> excludedDailyDates = const [],
   }) : startDate = startDate == null ? null : _dateOnly(startDate),
-       endDate = endDate == null ? null : _dateOnly(endDate);
+       endDate = endDate == null ? null : _dateOnly(endDate),
+       _completedKeys = {...completedDates},
+       _excludedDailyDates = {...excludedDailyDates};
 
   String title;
   QuestPeriod period;
@@ -19,8 +23,60 @@ class GameQuest {
   /// The first selected weekly window. It repeats every seven days.
   DateTime? startDate;
   DateTime? endDate;
-  final Set<String> _completedKeys = {};
-  final Set<String> _excludedDailyDates = {};
+  final Set<String> _completedKeys;
+  final Set<String> _excludedDailyDates;
+
+  Map<String, dynamic> toJson() => {
+    'title': title,
+    'period': period.name,
+    if (startDate != null) 'startDate': _dateString(startDate!),
+    if (endDate != null) 'endDate': _dateString(endDate!),
+    'completedDates': _completedKeys.toList()..sort(),
+    'excludedDailyDates': _excludedDailyDates.toList()..sort(),
+  };
+
+  factory GameQuest.fromJson(Map<String, dynamic> json) {
+    final title = json['title'];
+    final periodName = json['period'];
+    if (title is! String || title.trim().isEmpty || periodName is! String) {
+      throw const FormatException('퀘스트의 제목 또는 유형이 올바르지 않습니다.');
+    }
+    final periodMatches = QuestPeriod.values
+        .where((value) => value.name == periodName)
+        .toList();
+    if (periodMatches.isEmpty) {
+      throw FormatException('알 수 없는 퀘스트 유형: $periodName');
+    }
+    DateTime? parseDate(Object? value, String field) {
+      if (value == null) return null;
+      if (value is! String) {
+        throw FormatException('$field는 YYYY-MM-DD 문자열이어야 합니다.');
+      }
+      final parsed = DateTime.tryParse(value);
+      if (parsed == null) throw FormatException('$field 날짜가 올바르지 않습니다.');
+      return _dateOnly(parsed);
+    }
+
+    List<String> parseDateKeys(Object? value, String field) {
+      if (value == null) return const [];
+      if (value is! List || value.any((item) => item is! String)) {
+        throw FormatException('$field는 날짜 문자열 배열이어야 합니다.');
+      }
+      return value.cast<String>();
+    }
+
+    return GameQuest(
+      title: title.trim(),
+      period: periodMatches.first,
+      startDate: parseDate(json['startDate'], 'startDate'),
+      endDate: parseDate(json['endDate'], 'endDate'),
+      completedDates: parseDateKeys(json['completedDates'], 'completedDates'),
+      excludedDailyDates: parseDateKeys(
+        json['excludedDailyDates'],
+        'excludedDailyDates',
+      ),
+    );
+  }
 
   void update({
     required String title,
@@ -106,3 +162,8 @@ class GameQuest {
 }
 
 DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
+
+String _dateString(DateTime value) =>
+    '${value.year.toString().padLeft(4, '0')}-'
+    '${value.month.toString().padLeft(2, '0')}-'
+    '${value.day.toString().padLeft(2, '0')}';

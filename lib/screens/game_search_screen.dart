@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import '../models/calendar_event.dart';
 import '../models/game.dart';
 import '../models/quest.dart';
+import '../widgets/game_avatar.dart';
 
 class GameSearchScreen extends StatefulWidget {
   const GameSearchScreen({
     required this.games,
     required this.events,
+    required this.onDataChanged,
     required this.onEditQuest,
     required this.onDeleteQuest,
     required this.onEditEvent,
@@ -17,6 +19,7 @@ class GameSearchScreen extends StatefulWidget {
 
   final List<GameInfo> games;
   final List<CalendarEvent> events;
+  final Future<void> Function() onDataChanged;
   final Future<void> Function(GameInfo game, GameQuest quest) onEditQuest;
   final Future<void> Function(GameInfo game, GameQuest quest, DateTime date)
   onDeleteQuest;
@@ -175,8 +178,10 @@ class _GameSearchScreenState extends State<GameSearchScreen> {
             visualDensity: VisualDensity.compact,
             value: quest.isDoneOn(date),
             activeColor: game.color,
-            onChanged: (done) =>
-                setState(() => quest.setDoneOn(date, done ?? false)),
+            onChanged: (done) {
+              setState(() => quest.setDoneOn(date, done ?? false));
+              widget.onDataChanged();
+            },
           ),
           _actionButtons(
             itemLabel: '퀘스트',
@@ -356,6 +361,7 @@ class _GameSearchScreenState extends State<GameSearchScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 4),
                       child: ChoiceChip(
                         label: Text(game.name),
+                        avatar: GameAvatar(game: game, radius: 12),
                         selected: _selectedGameId == game.id,
                         onSelected: (_) => setState(() {
                           _selectedGameId = game.id;
